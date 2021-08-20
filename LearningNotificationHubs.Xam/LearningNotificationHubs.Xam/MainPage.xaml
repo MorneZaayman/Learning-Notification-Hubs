@@ -1,0 +1,33 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://xamarin.com/schemas/2014/forms"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="LearningNotificationHubs.Xam.MainPage">
+
+    <StackLayout>
+        <Frame BackgroundColor="#2196F3" Padding="24" CornerRadius="0">
+            <Label Text="Learning Notification Hubs" HorizontalTextAlignment="Center" TextColor="White" FontSize="36"/>
+        </Frame>
+        <Label
+            x:Name="PlatformLabel"
+            Text="Platform: " />
+        <Label
+            x:Name="DeviceIdLabel"
+            Text="DeviceId: " />
+        <Label
+            x:Name="PnsTokenLabel"
+            Text="PnsToken: " />
+        <Entry
+            x:Name="UsernameEntry"
+            Placeholder="Username"/>
+        <Button
+            x:Name="SignInButton"
+            Text="Sign In"
+            Clicked="SignInButton_Clicked"/>
+        <Button
+            x:Name="SignOutButton"
+            Text="Sign Out"
+            Clicked="SignOutButton_Clicked"
+            IsEnabled="false"/>
+    </StackLayout>
+
+</ContentPage>
