@@ -21,7 +21,7 @@ namespace LearningNotificationHubs.API.Controllers
 
         [HttpPost("SignUserIn")]
         public async Task<IActionResult> SignUserIn(SignInUserDto signInUserDto)
-        {        
+        {
             // Check if this user exists.
             User user = _applicationDbContext.Users.FirstOrDefault(u => u.Username == signInUserDto.Username);
 
@@ -36,7 +36,7 @@ namespace LearningNotificationHubs.API.Controllers
                 await _applicationDbContext.Users.AddAsync(user);
 
                 // Register with Azure Notification Hub
-                string registrationId = await _notificationHubService.CreateRegistration(signInUserDto);
+                var installationIdAndNamespaceName = await _notificationHubService.CreateRegistration(signInUserDto);
 
                 Device device = new Device
                 {
@@ -44,7 +44,8 @@ namespace LearningNotificationHubs.API.Controllers
                     Platform = signInUserDto.Platform.Value,
                     PnsToken = signInUserDto.PnsToken,
                     Username = signInUserDto.Username,
-                    RegistrationId = registrationId
+                    RegistrationId = installationIdAndNamespaceName.registrationId,
+                    NotificationHubNamespaceName = installationIdAndNamespaceName.notificationHubNamespaceName
                 };
 
                 await _applicationDbContext.Devices.AddAsync(device);
@@ -60,7 +61,7 @@ namespace LearningNotificationHubs.API.Controllers
                 // If the device has not been assigned, assign it.
                 if (device is null)
                 {
-                    string registrationId = await _notificationHubService.CreateRegistration(signInUserDto);
+                    var installationIdAndNamespaceName = await _notificationHubService.CreateRegistration(signInUserDto);
 
                     device = new Device
                     {
@@ -68,7 +69,8 @@ namespace LearningNotificationHubs.API.Controllers
                         Platform = signInUserDto.Platform.Value,
                         PnsToken = signInUserDto.PnsToken,
                         Username = signInUserDto.Username,
-                        RegistrationId = registrationId
+                        RegistrationId = installationIdAndNamespaceName.registrationId,
+                        NotificationHubNamespaceName = installationIdAndNamespaceName.notificationHubNamespaceName
                     };
 
                     await _applicationDbContext.Devices.AddAsync(device);
@@ -76,7 +78,7 @@ namespace LearningNotificationHubs.API.Controllers
                 else
                 // Update the registration
                 {
-                    await _notificationHubService.UpdateRegistration(signInUserDto, device.RegistrationId);
+                    await _notificationHubService.UpdateRegistration(signInUserDto, device.RegistrationId, device.NotificationHubNamespaceName);
 
                     device.RegistrationId = signInUserDto.PnsToken;
                 }
@@ -108,7 +110,7 @@ namespace LearningNotificationHubs.API.Controllers
             // If the device has not been assigned, unassign it.
             if (device is not null)
             {
-                await _notificationHubService.DeleteRegistration(device.RegistrationId);
+                await _notificationHubService.DeleteRegistration(device.RegistrationId, device.NotificationHubNamespaceName);
 
                 _applicationDbContext.Devices.Remove(device);
                 await _applicationDbContext.SaveChangesAsync();
@@ -126,7 +128,7 @@ namespace LearningNotificationHubs.API.Controllers
 
             // Finally, save the changes.
             await _applicationDbContext.SaveChangesAsync();
-              
+
             return Ok();
         }
     }

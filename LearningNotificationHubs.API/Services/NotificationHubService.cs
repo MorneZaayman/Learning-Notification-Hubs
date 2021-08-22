@@ -1,30 +1,52 @@
 ﻿using System.Text;
 using System.Xml;
+using System.Xml.Serialization;
 using LearningNotificationHubs.Shared.Dtos;
 using LearningNotificationHubs.Shared.Models;
+using LearningNotificationHubs.API.Services.Azure;
 
 namespace LearningNotificationHubs.API.Services
 {
     public class NotificationHubService : INotificationHubService
     {
-        private readonly string _namespaceName;
-        private readonly string _hubName;
-        private readonly string _sasKeyName;
-        private readonly string _sasKey;
-      
+        private readonly int _devicesPerNamespace;
+        private readonly List<NotificationHubNamespaceCredentials> _notificationHubNamespaces = new List<NotificationHubNamespaceCredentials>();
+
         public NotificationHubService(IConfiguration configuration)
         {
-            _namespaceName = configuration.GetSection("NotificationHubService:NamespaceName").Value;
-            _hubName = configuration.GetSection("NotificationHubService:HubName").Value;
-            _sasKeyName = configuration.GetSection("NotificationHubService:SasKeyName").Value;
-            _sasKey = configuration.GetSection("NotificationHubService:SasKey").Value;
+            var notificationHubServiceConfiguration = configuration.GetSection("NotificationHubService");
+
+            var namespaceCount = notificationHubServiceConfiguration.GetValue<int>("Namespaces");
+            _devicesPerNamespace = notificationHubServiceConfiguration.GetValue<int>("DevicesPerNamespace");
+
+            for (var count = 1; count <= namespaceCount; count++)
+            {
+                _notificationHubNamespaces.Add(new NotificationHubNamespaceCredentials(count, configuration));
+            }
         }
 
-        public async Task<string> CreateRegistration(SignInUserDto signInUserDto)
+        public async Task<(string registrationId, string notificationHubNamespaceName)> CreateRegistration(SignInUserDto signInUserDto)
         {
+            // Find the first namespace with a free slot.
+            NotificationHubNamespaceCredentials usableNotificationHubNamespace = null;
+            foreach (var notificationHubNamespace in _notificationHubNamespaces)
+            {
+                var registrations = await GetRegistrations(notificationHubNamespace);
+                if (registrations.Count() < _devicesPerNamespace)
+                {
+                    usableNotificationHubNamespace = notificationHubNamespace;
+                    break;
+                }
+            }
+
+            if (usableNotificationHubNamespace is null)
+            {
+                throw new Exception("All the Notification Hub namespaces are full.");
+            }
+
             string createRegistration = CreateRegistrationBody(signInUserDto);
 
-            string resourceUri = $"https://{_namespaceName}.servicebus.windows.net/{_hubName}/registrations?api-version=2015-01";
+            string resourceUri = $"https://{usableNotificationHubNamespace.NamespaceName}.servicebus.windows.net/{usableNotificationHubNamespace.HubName}/registrations?api-version=2015-01";
             HttpRequestMessage request = new HttpRequestMessage()
             {
                 RequestUri = new Uri(resourceUri),
@@ -32,7 +54,7 @@ namespace LearningNotificationHubs.API.Services
                 Content = new StringContent(createRegistration, Encoding.UTF8, "application/atom+xml")
             };
 
-            string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, _sasKeyName, _sasKey);
+            string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, usableNotificationHubNamespace.SasKeyName, usableNotificationHubNamespace.SasKey);
             request.Headers.TryAddWithoutValidation("Authorization", sasToken);
 
             HttpClient httpClient = new HttpClient();
@@ -47,22 +69,24 @@ namespace LearningNotificationHubs.API.Services
 
             string registrationId = xmlDocument.GetElementsByTagName("title")[0].InnerText;
 
-            return registrationId;
+            return (registrationId, usableNotificationHubNamespace.NamespaceName);
         }
 
-        public async Task<string> UpdateRegistration(SignInUserDto signInDeviceDto, string registrationId)
+        public async Task UpdateRegistration(SignInUserDto signInDeviceDto, string registrationId, string namespaceName)
         {
+            var notificationHubNamespace = _notificationHubNamespaces.First(nhn => nhn.NamespaceName == namespaceName);
+
             string registrationBody = CreateRegistrationBody(signInDeviceDto);
 
-            string resourceUri = $"https://{_namespaceName}.servicebus.windows.net/{_hubName}/registrations/{registrationId}?api-version=2015-01";
+            string resourceUri = $"https://{notificationHubNamespace.NamespaceName}.servicebus.windows.net/{notificationHubNamespace.HubName}/registrations/{registrationId}?api-version=2015-01";
             HttpRequestMessage request = new HttpRequestMessage()
             {
                 RequestUri = new Uri(resourceUri),
-                Method = HttpMethod.Post,
+                Method = HttpMethod.Put,
                 Content = new StringContent(registrationBody, Encoding.UTF8, "application/atom+xml")
             };
 
-            string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, _sasKeyName, _sasKey);
+            string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, notificationHubNamespace.SasKeyName, notificationHubNamespace.SasKey);
             request.Headers.TryAddWithoutValidation("Authorization", sasToken);
             request.Headers.TryAddWithoutValidation("If-Match", "*");
 
@@ -70,23 +94,20 @@ namespace LearningNotificationHubs.API.Services
             HttpResponseMessage response = await httpClient.SendAsync(request);
 
             response.EnsureSuccessStatusCode();
-
-            string contentLocation = response.Headers.First(header => header.Key == "Content-Location").Value.First();
-            string newRegistrationId = new Uri(contentLocation).Segments.Last();
-
-            return newRegistrationId;
         }
 
-        public async Task DeleteRegistration(string registrationId)
+        public async Task DeleteRegistration(string registrationId, string namespaceName)
         {
-            string resourceUri = $"https://{_namespaceName}.servicebus.windows.net/{_hubName}/registrations/{registrationId}?api-version=2015-01";
+            var notificationHubNamespace = _notificationHubNamespaces.First(nhn => nhn.NamespaceName == namespaceName);
+
+            string resourceUri = $"https://{notificationHubNamespace.NamespaceName}.servicebus.windows.net/{notificationHubNamespace.HubName}/registrations/{registrationId}?api-version=2015-01";
             HttpRequestMessage request = new HttpRequestMessage()
             {
                 RequestUri = new Uri(resourceUri),
                 Method = HttpMethod.Delete
             };
 
-            string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, _sasKeyName, _sasKey);
+            string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, notificationHubNamespace.SasKeyName, notificationHubNamespace.SasKey);
             request.Headers.TryAddWithoutValidation("Authorization", sasToken);
             request.Headers.TryAddWithoutValidation("If-Match", "*");
 
@@ -95,27 +116,41 @@ namespace LearningNotificationHubs.API.Services
 
             response.EnsureSuccessStatusCode();
         }
+
+
+
         public async Task SendNotification(string message, string tag)
         {
-            string notificationBody = "{\"message\":\"" + message + "\"}";
-
-            string resourceUri = $"https://{_namespaceName}.servicebus.windows.net/{_hubName}/messages/?api-version=2015-01";
-            HttpRequestMessage request = new HttpRequestMessage()
+            // Send the notification to each namespace.
+            var sendNotificationTasks = new List<Task<HttpResponseMessage>>();
+            foreach (var notificationHubNamespace in _notificationHubNamespaces)
             {
-                RequestUri = new Uri(resourceUri),
-                Method = HttpMethod.Post,
-                Content = new StringContent(notificationBody, Encoding.UTF8, "application/json")
-            };
+                string notificationBody = "{\"message\":\"" + message + "\"}";
 
-            string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, _sasKeyName, _sasKey);
-            request.Headers.TryAddWithoutValidation("Authorization", sasToken);
-            request.Headers.TryAddWithoutValidation("ServiceBusNotification-Tags", tag);
-            request.Headers.TryAddWithoutValidation("ServiceBusNotification-Format", "template");
+                string resourceUri = $"https://{notificationHubNamespace.NamespaceName}.servicebus.windows.net/{notificationHubNamespace.HubName}/messages/?api-version=2015-01";
+                HttpRequestMessage request = new HttpRequestMessage()
+                {
+                    RequestUri = new Uri(resourceUri),
+                    Method = HttpMethod.Post,
+                    Content = new StringContent(notificationBody, Encoding.UTF8, "application/json")
+                };
 
-            HttpClient httpClient = new HttpClient();
-            HttpResponseMessage response = await httpClient.SendAsync(request);
+                string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, notificationHubNamespace.SasKeyName, notificationHubNamespace.SasKey);
+                request.Headers.TryAddWithoutValidation("Authorization", sasToken);
+                request.Headers.TryAddWithoutValidation("ServiceBusNotification-Tags", tag);
+                request.Headers.TryAddWithoutValidation("ServiceBusNotification-Format", "template");
 
-            response.EnsureSuccessStatusCode();       
+                HttpClient httpClient = new HttpClient();
+
+                sendNotificationTasks.Add(httpClient.SendAsync(request));
+            }
+
+            await Task.WhenAll(sendNotificationTasks);
+
+            foreach (var sendNotificationTask in sendNotificationTasks)
+            {
+                sendNotificationTask.Result.EnsureSuccessStatusCode();
+            }
         }
 
         private string CreateRegistrationBody(SignInUserDto signInDeviceDto)
@@ -194,6 +229,41 @@ namespace LearningNotificationHubs.API.Services
                 .Replace("{1}", signInDeviceDto.PnsToken);
 
             return createRegistration;
+        }
+
+        private async Task<List<string>> GetRegistrations(NotificationHubNamespaceCredentials notificationHubNamespace)
+        {
+            string resourceUri = $"https://{notificationHubNamespace.NamespaceName}.servicebus.windows.net/{notificationHubNamespace.HubName}/registrations/?api-version=2015-01";
+            HttpRequestMessage request = new HttpRequestMessage()
+            {
+                RequestUri = new Uri(resourceUri),
+                Method = HttpMethod.Get
+            };
+
+            string sasToken = Azure.AzureUtililities.GenerateSASToken(resourceUri, notificationHubNamespace.SasKeyName, notificationHubNamespace.SasKey);
+            request.Headers.TryAddWithoutValidation("Authorization", sasToken);
+
+            HttpClient httpClient = new HttpClient();
+            HttpResponseMessage response = await httpClient.SendAsync(request);
+
+            response.EnsureSuccessStatusCode();
+
+            XmlSerializer xmlSerializer = new XmlSerializer(typeof(Azure.feed));
+            Stream stream = await response.Content.ReadAsStreamAsync();
+
+            Azure.feed feedVar = xmlSerializer.Deserialize(stream) as Azure.feed;
+
+            // The feed contains a list of entries. Each entry has a 'title' that is its ID.
+            List<string> entries = new List<string>();
+            if (feedVar.entry is not null)
+            {
+                foreach (Azure.feedEntry entry in feedVar.entry)
+                {
+                    entries.Add(entry.title.Value);
+                }
+            }
+
+            return entries;
         }
     }
 }
